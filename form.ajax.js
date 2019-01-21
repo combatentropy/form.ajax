@@ -11,6 +11,135 @@ if (! Element.prototype.matches) {
 if (! HTMLFormElement.prototype.readOut) {
     HTMLFormElement.prototype.readOut = function (submitter, enctype) {
 
+        // https://www.w3.org/TR/html-json-forms/
+        function entriesToJson(entries) {
+
+            function parsePath(path) {
+
+                let steps = [];
+                let end = path.indexOf('[');
+                if (-1 === end) { end = path.length; }
+                let firstKey = path.substring(0, end);
+                let failure = [{ type: 'object',  key: path,  last: true }];
+
+                if ('' === firstKey) { return failure; }
+                else {
+                    path = path.substring(end);
+                    let last = ('' === path);
+                    steps.push({
+                        type: 'object',
+                        key: firstKey,
+                        last: last,
+                        append: false,
+                    });
+
+                    if (last) { return steps; }
+
+                    while ('' !== path) {
+
+                        if ('[]' === path.substring(0, 2)) {
+                            steps[steps.length - 1].append = true;
+                            path = path.substring(2);
+                            if (0 !== path.length) { return failure; }
+                            continue;
+                        }
+
+                        let matches = path.match(/^\[([^\]]+)\](.*)/);
+
+                        if (matches) {
+
+                            let key = matches[1],  type = 'object';
+
+                            path = matches[2];
+
+                            if (key.match(/^\d+$/)) {
+                                key = Number(key);
+                                type = 'array';
+                            }
+
+                            steps.push({ type: type,  key: key,  last: false });
+                            continue;
+                        }
+
+                        return failure;
+                    }
+
+                    for (let i = 0; i < steps.length; i++) {
+                        let step = steps[i];
+                        if ((steps.length - 1) === i) {
+                            step.last = true;
+                        } else {
+                            step.last = false;
+                            step.nextType = steps[i + 1].type;
+                        }
+                    }
+                }
+
+                return steps;
+            }
+
+            function setJsonValue(context, step, currentValue, entryValue) {
+
+                if (step.last) {
+                    if ('undefined' === typeof currentValue) {
+                        context[step.key] = step.append ? [ entryValue ] : entryValue;
+                    } else if (Array.isArray(currentValue)) {
+                        context[step.key].push(entryValue);
+                    } else if ('object' === typeof currentValue) {
+                        step = { type: 'object',  key: '',  last: true };
+                        return setJsonValue(currentValue, step, currentValue[''], entryValue);
+                    } else {
+                        context[step.key] = [ currentValue, entryValue ];
+                    }
+                    return context;
+                } else {
+                    if ('undefined' === typeof currentValue) {
+                        entryValue = ('array' === step.nextType) ? [] : {}
+                        context[step.key] = entryValue;
+                        return entryValue;
+                    } else if ('object' === typeof currentValue) {
+                        return context[step.key];
+                    } else if (Array.isArray(currentValue)) {
+                        if ('array' === step.nextType) {
+                            return currentValue;
+                        } else {
+                            let o = {};
+                            for (let i = 0; i < currentValue.length; i++) {
+                                let item = currentValue[i];
+                                if ('undefined' !== typeof item) { o[i] = item; }
+                                else { context[step.key] = o; }
+                            }
+                            return o;
+                        }
+                    } else {
+                        let o = { '': currentValue };
+                        context[step.key] = o;
+                        return o;
+                    }
+                }
+            }
+
+            let result = {};
+
+            for (let i = 0; i < entries.length; i++) {
+
+                let entry = entries[i],
+                    entryName = entry[0],
+                    entryValue = entry[1],
+                    steps = parsePath(entryName),
+                    context = result;
+
+                for (let j = 0; j < steps.length; j++) {
+                    let step = steps[j];
+                    let currentValue = context[step.key];
+                    context = setJsonValue(context, step, currentValue, entryValue);
+                }
+            }
+
+            result = JSON.stringify(result);
+            return result;
+        }
+
         const form = this;
         let data = null;
         if (! submitter) { submitter = form.clickee; }
@@ -19,16 +148,24 @@ if (! HTMLFormElement.prototype.readOut) {
         let ns = (submitter && submitter.name && submitter.name.length) ?
             submitter : null;
 
-        if (! enctype) {
-            enctype = (submitter && submitter.formEncType) ?
-                submitter.formEncType : form.enctype;
-        }
+        enctype =
+            enctype ||
+            (submitter ? submitter.getAttribute('formenctype') : null) ||
+            form.getAttribute('enctype') ||
+            form.enctype;
 
         if (FormData.prototype.entries) {
             data = new FormData(form);
             if (ns) { data.append(ns.name, ns.value); }
 
             switch (enctype) {
+
+                case 'application/json':
+                    let entries = [];
+                    for (let v of data) { entries.push(v); }
+                    data = entriesToJson(entries);
+                    break;
+
                 case 'application/x-www-form-urlencoded':
                     data = new URLSearchParams(data);
                     break;
@@ -59,15 +196,18 @@ if (! HTMLFormElement.prototype.readOut) {
             let q = [];
 
             switch (enctype) {
-                case 'text/plain':
+
+                case 'application/json':
                     for (let i = 0; i < form.elements.length; i++) {
                         let el = form.elements[i];
                         if (elementIsSerializable(el)) {
-                            q.push([ el.name, el.value ].join('='));
+                            q.push([ el.name, el.value ]);
                         }
                     }
-                    if (ns) { q.push([ ns.name, ns.value ].join('=')); }
-                    data = q.join('\n');
+                    if (ns) {
+                        q.push([ ns.name, ns.value ]);
+                    }
+                    data = entriesToJson(q);
                     break;
 
                 case 'application/x-www-form-urlencoded':
@@ -92,6 +232,17 @@ if (! HTMLFormElement.prototype.readOut) {
                 case 'multipart/form-data':
                     data = new FormData(form);
                     if (ns) { data.append(ns.name, ns.value); }
+                    break;
+
+                case 'text/plain':
+                    for (let i = 0; i < form.elements.length; i++) {
+                        let el = form.elements[i];
+                        if (elementIsSerializable(el)) {
+                            q.push([ el.name, el.value ].join('='));
+                        }
+                    }
+                    if (ns) { q.push([ ns.name, ns.value ].join('=')); }
+                    data = q.join('\n');
                     break;
             }
         };
@@ -135,19 +286,22 @@ document.addEventListener('submit', function (ev) {
 
     let method = form.getAttribute('method') || form.method,
         action = form.action,
-        enctype = form.enctype,
+        enctype = form.getAttribute('enctype') || form.enctype,
         target = form.target;
 
     // Let clicked button override form attributes
     if (form.clickee) {
         let c = form.clickee;
-        method = c.getAttribute('formmethod') || c.formMethod || method;
-        enctype = c.formEncType || enctype;
+        method = c.getAttribute('formmethod') || method;
+        enctype = c.getAttribute('formenctype') || enctype;
         target = c.formTarget || target;
         if (c.formAction !== location.href) { action = c.formAction; }
     }
 
     method = method.toUpperCase();
+
+    let charset = form.acceptCharset || document.characterSet,
+        contentType = enctype + '; charset=' + charset + ';';
 
     // Disable form until AJAX request finishes
     for (let i = 0; i < buttons.length; i++) {
@@ -163,17 +317,6 @@ document.addEventListener('submit', function (ev) {
     }
 
     form.classList.add('loading');
-    let data = form.readOut(form.clickee, enctype);
-
-    if ('GET' === method) {
-        // Strip query string
-        let queryStringStart = action.indexOf('?');
-        if (~queryStringStart) {
-            action = action.substring(0, queryStringStart);
-        }
-        action += '?' + data;
-        data = null;
-    }
 
     // Attach handler to AJAX response,
     // but only if the onload attribute isn't set
@@ -270,21 +413,22 @@ document.addEventListener('submit', function (ev) {
         };
     }
 
+    let data = form.readOut(form.clickee, enctype);
 
-    //
+    if ('GET' === method) {
+        // Strip query string
+        let queryStringStart = action.indexOf('?');
+        if (~queryStringStart) {
+            action = action.substring(0, queryStringStart);
+        }
+        action += '?' + data;
+        data = null;
+    }
+
     // Send the request
-    //
-
     ajax.open(method, action);
-
-    let charset = form.acceptCharset || document.characterSet,
-        contentType = enctype + '; charset=' + charset + ';';
     ajax.setRequestHeader('Content-Type', contentType);
-
-    if (data) { ajax.send(data); }
-    else { ajax.send(); }
-
-    form.clickee = null;  // TODO: How needed is this?
+    if (data) { ajax.send(data); } else { ajax.send(); }
 });
 
 document.addEventListener('reset', function (ev) {
@@ -301,4 +445,3 @@ document.addEventListener('click', function (ev) {
 });
 
 })();
-
