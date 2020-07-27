@@ -256,8 +256,6 @@ const BUTTON_SELECTOR = 'button, input[type=submit], input[type=image]';
 // Some set-up, called on submit and reset
 function setUp(form) {
     if (form.ajax instanceof XMLHttpRequest) { form.ajax.abort(); }
-    if (form.targeted) { form.targeted.textContent = ''; }
-    form.targeted = null;
     form.classList.remove('success');
     form.classList.remove('error');
     form.ajax = new XMLHttpRequest;
@@ -287,7 +285,8 @@ document.addEventListener('submit', function (ev) {
     let method = form.getAttribute('method') || form.method,
         action = form.action,
         enctype = form.getAttribute('enctype') || form.enctype,
-        target = form.target;
+        target = form.target,
+        angle = form.dataset.angle || 'fill';
 
     // Let clicked button override form attributes
     if (form.clickee) {
@@ -295,6 +294,7 @@ document.addEventListener('submit', function (ev) {
         method = c.getAttribute('formmethod') || method;
         enctype = c.getAttribute('formenctype') || enctype;
         target = c.formTarget || target;
+        angle = c.dataset.formangle || angle;
         if (c.formAction !== location.href) { action = c.formAction; }
     }
 
@@ -325,12 +325,15 @@ document.addEventListener('submit', function (ev) {
     if (! ajax.onload) {
         ajax.onload = function () {
             form.classList.remove('loading');
+            let eventSource = form,
+                eventDetail = {};
 
             //
             // Heed response code
             //
 
             let success = (2 === Math.floor(ajax.status / 100));
+            eventDetail.success = success;
 
             if (success) {
                 form.classList.add('success');
@@ -338,10 +341,14 @@ document.addEventListener('submit', function (ev) {
                     case 201: // Created
                         // Go to the address in the Location header
                         let loc = ajax.getResponseHeader('Location');
-                        if (loc) { location.href = loc; }
+                        if (loc) {
+                            location.href = loc;
+                            return;
+                        }
                         break;
                     case 205: // Reset Content
                         location.reload();
+                        return;
                         break;
                 }
             } else {
@@ -369,6 +376,7 @@ document.addEventListener('submit', function (ev) {
                         target = form.querySelector('.ajax-target');
                         if (! target) { target = form; }
                     }
+
                 } else {
                     // form['data-error-target'], form .ajax-error-target, form['target'], form .ajax-target, form
                     if (form.dataset.errorTarget) {
@@ -394,21 +402,91 @@ document.addEventListener('submit', function (ev) {
                     let contentType = ajax.getResponseHeader('Content-Type').split(';').shift(),
                         prop = '';
 
-                    if (target === form && 'text/html' === contentType) {
-                        prop = 'outerHTML';
-                    } else {
-                        let props = {
-                            'text/plain': 'textContent',
-                            'text/html': 'innerHTML'
-                        };
-                        prop = props[contentType];
+                    switch (contentType) {
+                        case 'text/html':
+                            switch (angle) {
+                                case 'fill':
+                                    target.innerHTML = ajax.responseText;
+                                    break;
+
+                                case 'replace':
+                                    if (form === target) { eventSource = form.parentNode; }
+                                    target.outerHTML = ajax.responseText;
+                                    break;
+
+                                case 'before':
+                                    target.insertAdjacentHTML(
+                                        'beforebegin', ajax.responseText
+                                    );
+                                    break;
+
+                                case 'prepend':
+                                    target.insertAdjacentHTML(
+                                        'afterbegin', ajax.responseText
+                                    );
+                                    break;
+
+                                case 'append':
+                                    target.insertAdjacentHTML(
+                                        'beforeend', ajax.responseText
+                                    );
+                                    break;
+
+                                case 'after':
+                                    target.insertAdjacentHTML(
+                                        'afterend', ajax.responseText
+                                    );
+                                    break;
+                            }
+                            break;
+
+                        case 'text/plain':
+                            switch (angle) {
+                                case 'fill':
+                                    target.textContent = ajax.responseText;
+                                    break;
+
+                                case 'replace':
+                                    if (form === target) { eventSource = form.parentNode; }
+                                    let newText = document.createTextNode(ajax.responseText);
+                                    target.parentNode.replaceChild(newText, target);
+                                    break;
+
+                                case 'before':
+                                    target.insertAdjacentText(
+                                        'beforebegin', ajax.responseText
+                                    );
+                                    break;
+
+                                case 'prepend':
+                                    target.insertAdjacentText(
+                                        'afterbegin', ajax.responseText
+                                    );
+                                    break;
+
+                                case 'append':
+                                    target.insertAdjacentText(
+                                        'beforeend', ajax.responseText
+                                    );
+                                    break;
+
+                                case 'after':
+                                    target.insertAdjacentText(
+                                        'afterend', ajax.responseText
+                                    );
+                                    break;
+                            }
+                            break;
                     }
-
-                    target[prop] = ajax.responseText;
-
-                    // Save for reset
-                    form.targeted = target;
                 }
+            }
+
+            eventSource.dispatchEvent(
+                new CustomEvent('form-ajax-load', eventDetail)
+            );
+
+            if (form.parentNode) {
+                form.reset();
             }
         };
     }
@@ -431,6 +509,7 @@ document.addEventListener('submit', function (ev) {
     if (data) { ajax.send(data); } else { ajax.send(); }
 });
 
+/*
 document.addEventListener('reset', function (ev) {
     if (ev.target.matches('form.ajax')) {
         let form = ev.target;
@@ -438,6 +517,7 @@ document.addEventListener('reset', function (ev) {
         form.clickee = null;
     }
 });
+*/
 
 document.addEventListener('click', function (ev) {
     const el = ev.target;
